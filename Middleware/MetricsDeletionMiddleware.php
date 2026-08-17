@@ -4,19 +4,27 @@ declare(strict_types=1);
 
 namespace Shared\Deletion\Middleware;
 
+/**
+ * Collects coarse deletion metrics from DeletionOrchestrator lifecycle hooks.
+ *
+ * Labels intentionally avoid entity ids to keep metric cardinality under
+ * control. Classes, operation stages and join table names are enough to see
+ * volume and latency trends without creating one time series per entity.
+ */
 final class MetricsDeletionMiddleware implements DeletionMiddlewareInterface
 {
-    /** @var array<int, float> */
+    /** @var array<int, float> Root deletion start time by root object id. */
     private array $rootStartedAt = [];
 
-    /** @var array<string, float> */
+    /** @var array<string, float> Child deletion start time by operation key. */
     private array $childrenStartedAt = [];
 
-    /** @var array<string, float> */
+    /** @var array<string, float> Relation detach start time by operation key. */
     private array $detachStartedAt = [];
 
     /**
-     * @param list<class-string>|null $supportedRootClasses
+     * @param DeletionMetricsCollectorInterface $collector Metrics backend adapter.
+     * @param list<class-string>|null $supportedRootClasses Root entity classes that should emit metrics.
      */
     public function __construct(
         private readonly DeletionMetricsCollectorInterface $collector,
@@ -30,6 +38,9 @@ final class MetricsDeletionMiddleware implements DeletionMiddlewareInterface
         return $this->supportedRootClasses === null || in_array($entityClass, $this->supportedRootClasses, true);
     }
 
+    /**
+     * Counts a relation-detach batch and the amount of join rows planned for deletion.
+     */
     public function beforeDetachRelations(string $parentClass, string $childClass, array $childIds, array $relation, object $root): void
     {
         if (!$this->supports($root::class)) {
@@ -48,6 +59,9 @@ final class MetricsDeletionMiddleware implements DeletionMiddlewareInterface
         $this->collector->increment('deletion_detach_rows_total', $labels, count($childIds));
     }
 
+    /**
+     * Records how long the relation-detach operation took.
+     */
     public function afterDetachRelations(string $parentClass, string $childClass, array $childIds, array $relation, object $root): void
     {
         if (!$this->supports($root::class)) {
@@ -70,6 +84,9 @@ final class MetricsDeletionMiddleware implements DeletionMiddlewareInterface
         ]);
     }
 
+    /**
+     * Counts a child-delete batch and the amount of child rows planned for deletion.
+     */
     public function beforeDeleteChildren(string $childClass, array $childIds, object $root): void
     {
         if (!$this->supports($root::class)) {
@@ -86,6 +103,9 @@ final class MetricsDeletionMiddleware implements DeletionMiddlewareInterface
         $this->collector->increment('deletion_child_delete_rows_total', $labels, count($childIds));
     }
 
+    /**
+     * Records how long the child-delete operation took.
+     */
     public function afterDeleteChildren(string $childClass, array $childIds, object $root): void
     {
         if (!$this->supports($root::class)) {
@@ -106,6 +126,9 @@ final class MetricsDeletionMiddleware implements DeletionMiddlewareInterface
         ]);
     }
 
+    /**
+     * Marks the start of root deletion and counts attempted root deletions.
+     */
     public function beforeDeleteRoot(object $root): void
     {
         if (!$this->supports($root::class)) {
@@ -118,6 +141,9 @@ final class MetricsDeletionMiddleware implements DeletionMiddlewareInterface
         ]);
     }
 
+    /**
+     * Counts successful root deletions and records total root deletion duration.
+     */
     public function afterDeleteRoot(object $root): void
     {
         if (!$this->supports($root::class)) {
@@ -139,6 +165,9 @@ final class MetricsDeletionMiddleware implements DeletionMiddlewareInterface
         }
     }
 
+    /**
+     * Builds a temporary key for matching before/after hooks in one PHP process.
+     */
     private function operationKey(object $root, string $stage, string $class): string
     {
         return sprintf('%d:%s:%s', spl_object_id($root), $stage, $class);
